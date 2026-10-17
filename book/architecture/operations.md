@@ -33,21 +33,30 @@ The terms are deliberately narrow:
    recorded payment**. It compares the replay's details, including the memo,
    with the original intent; changed valid details return **HTTP 409**.
    A new intent and key are recorded as `preparing` before wallet work.
-4. With a new key, the server synchronizes its wallet. The SDK chooses
-   spendable funds and a fee, constructs the transaction, and saves it in the
-   wallet. The server saves its txid and transaction bytes as `prepared` before
-   broadcast. For faucet payments, the source is hidden treasury
-   Account 6; it may replenish itself first.
-5. The server submits the saved transaction through lightwalletd and marks
-   it `broadcast`. If the node already knows the txid, the server continues
-   with that transaction. A lost response can be recovered using the saved
-   payment rather than constructing another one.
-6. The server asks Zakura whether the transaction is confirmed. If needed,
-   it mines one block, waits for wallet reconciliation, and asks again. It
-   returns `confirmed` activity with a block hash if successful. If
-   auto-mining fails, it can return `broadcast` activity with the txid
-   and no block hash. Background confirmation checks can later confirm
-   recorded account activity independently of wallet synchronization.
+4. The server answers without waiting for the payment: **HTTP 202** while
+   the payment is `preparing`, `prepared`, or `broadcast`, or **HTTP 200**
+   for a replay that already reached `confirmed` or `failed`. The body is
+   the recorded activity, and the `Location` header points to
+   `GET /api/v1/activity?idempotency_key=<key>`; poll it for the outcome.
+5. A background loop then works through unresolved payments **in the order
+   they were accepted**. It synchronizes the wallet; the SDK chooses spendable
+   funds and a fee, constructs the transaction, and saves it in the wallet.
+   The server saves its txid and transaction bytes as `prepared` before
+   broadcast. For faucet payments, the source is hidden treasury Account 6;
+   it may replenish itself first. A send with insufficient funds is stored
+   as `failed`, unless a payment accepted earlier into the same account and
+   pool is still unresolved: then the send stays `preparing` and is retried
+   after that payment settles, so a send can depend on a faucet or send
+   accepted just before it.
+6. The loop submits the saved transaction through lightwalletd and marks it
+   `broadcast`. If the node already knows the txid, the loop continues with
+   that transaction, so a lost response is recovered from the saved payment
+   rather than by constructing another one. It then asks Zakura whether the
+   transaction is confirmed. If needed, it mines one block, waits for wallet
+   reconciliation, and asks again, storing `confirmed` and the block hash on
+   success. If auto-mining fails, the activity stays `broadcast` with its
+   txid and no block hash; later background checks can confirm it
+   independently of wallet synchronization.
 
 The important ordering is **record intent → save transaction → broadcast**.
 Concurrent requests with the same key share the recorded intent and serialized

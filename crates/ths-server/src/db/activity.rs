@@ -360,18 +360,32 @@ pub struct ActivityIntent {
 }
 
 impl Store {
+    #[cfg(test)]
     pub fn unresolved_activities(&self) -> Result<Vec<ActivityIntent>> {
+        Ok(self
+            .sequenced_unresolved_activities()?
+            .into_iter()
+            .map(|(_, intent)| intent)
+            .collect())
+    }
+
+    /// Unresolved intents in acceptance order, each with its rowid. Ids are
+    /// random, so the rowid is the only record of which payment came first.
+    pub fn sequenced_unresolved_activities(&self) -> Result<Vec<(i64, ActivityIntent)>> {
         let db = self.0.lock().unwrap();
         let mut query = db.prepare(&format!(
-            "SELECT {ACTIVITY_COLUMNS},i.key,i.memo FROM activity a JOIN idempotency i ON i.activity_id=a.id WHERE a.status NOT IN ('confirmed','failed') ORDER BY a.rowid ASC"
+            "SELECT {ACTIVITY_COLUMNS},i.key,i.memo,a.rowid FROM activity a JOIN idempotency i ON i.activity_id=a.id WHERE a.status NOT IN ('confirmed','failed') ORDER BY a.rowid ASC"
         ))?;
         Ok(query
             .query_map([], |row| {
-                Ok(ActivityIntent {
-                    activity: row_activity(row)?,
-                    key: row.get(13)?,
-                    memo: row.get(14)?,
-                })
+                Ok((
+                    row.get(15)?,
+                    ActivityIntent {
+                        activity: row_activity(row)?,
+                        key: row.get(13)?,
+                        memo: row.get(14)?,
+                    },
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -389,16 +403,33 @@ impl Store {
             .optional()
             .map_err(Into::into)
     }
+    /// Whether a payment accepted before `id` still has to credit the pool that
+    /// `id` spends from. Such a send may only lack funds because of that
+    /// earlier payment, so its insufficient-funds result is not yet final.
+    pub fn has_earlier_unresolved_credit(&self, id: &str) -> Result<bool> {
+        let db = self.0.lock().unwrap();
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM activity send JOIN activity credit
+             ON credit.rowid<send.rowid AND credit.to_account=send.from_account
+             AND credit.destination_pool=send.source_pool
+             WHERE send.id=?1 AND credit.status NOT IN ('confirmed','failed'))",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+    }
 }
 
 impl Store {
-    pub fn unconfirmed_legacy_activities(&self) -> Result<Vec<Activity>> {
+    /// Unconfirmed activity without an idempotency intent, in acceptance order,
+    /// each with its rowid.
+    pub fn unconfirmed_legacy_activities(&self) -> Result<Vec<(i64, Activity)>> {
         let db = self.0.lock().unwrap();
         let mut query = db.prepare(&format!(
-            "SELECT {ACTIVITY_COLUMNS} FROM activity a WHERE a.txid!='' AND a.status NOT IN ('confirmed','failed') AND NOT EXISTS (SELECT 1 FROM idempotency i WHERE i.activity_id=a.id) ORDER BY a.rowid ASC"
+            "SELECT {ACTIVITY_COLUMNS},a.rowid FROM activity a WHERE a.txid!='' AND a.status NOT IN ('confirmed','failed') AND NOT EXISTS (SELECT 1 FROM idempotency i WHERE i.activity_id=a.id) ORDER BY a.rowid ASC"
         ))?;
         Ok(query
-            .query_map([], row_activity)?
+            .query_map([], |row| Ok((row.get(13)?, row_activity(row)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
     pub fn unconfirmed_legacy_activity(&self, id: &str) -> Result<Option<Activity>> {

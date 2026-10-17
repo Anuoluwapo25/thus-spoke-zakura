@@ -37,7 +37,8 @@ pub(crate) enum PaymentCollection {
 
 #[derive(Default)]
 pub(crate) struct PaymentTraversal {
-    pub(crate) activity_cursor: Option<String>,
+    /// Acceptance sequence (rowid) of the last activity dispatched.
+    pub(crate) activity_cursor: Option<i64>,
     pub(crate) address_cursor: Option<String>,
     pub(crate) next_collection: PaymentCollection,
 }
@@ -79,7 +80,7 @@ pub(crate) async fn payment_confirmation_loop(state: AppState) {
 pub(crate) async fn progress_payment_intents(
     state: &AppState,
     deadline: Instant,
-    activity_cursor: &mut Option<String>,
+    activity_cursor: &mut Option<i64>,
     address_cursor: &mut Option<String>,
 ) -> anyhow::Result<()> {
     let mut traversal = PaymentTraversal {
@@ -102,27 +103,11 @@ pub(crate) async fn progress_payment_intents_with_traversal(
         state,
         dispatch_deadline: Some(deadline),
     };
-    let mut activities: Vec<_> = state
-        .0
-        .store
-        .unresolved_activities()?
-        .into_iter()
-        .map(ActivityRecovery::Intent)
-        .collect();
-    activities.extend(
-        state
-            .0
-            .store
-            .unconfirmed_legacy_activities()?
-            .into_iter()
-            .map(ActivityRecovery::Legacy),
-    );
-    activities.sort_by(|left, right| left.id().cmp(right.id()));
+    let activities = queued_activities(&state.0.store)?;
     let mut address_faucets = state.0.store.unresolved_address_faucets()?;
     address_faucets.sort_by(|left, right| left.payment.id.cmp(&right.payment.id));
-    let activity_start = traversal.activity_cursor.as_ref().map_or(0, |id| {
-        activities.partition_point(|activity| activity.id() <= id.as_str())
-            % activities.len().max(1)
+    let activity_start = traversal.activity_cursor.map_or(0, |cursor| {
+        activities.partition_point(|(sequence, _)| *sequence <= cursor) % activities.len().max(1)
     });
     let address_start = traversal.address_cursor.as_ref().map_or(0, |id| {
         address_faucets.partition_point(|intent| intent.payment.id.as_str() <= id.as_str())
@@ -146,11 +131,12 @@ pub(crate) async fn progress_payment_intents_with_traversal(
         };
         match collection {
             PaymentCollection::Activity => {
-                let activity = &activities[(activity_start + activity_offset) % activities.len()];
+                let (sequence, activity) =
+                    &activities[(activity_start + activity_offset) % activities.len()];
                 activity_offset += 1;
                 // Persist the resume point before lock or execution waits, including
                 // an attempt that uses the rest of this pass's dispatch budget.
-                traversal.activity_cursor = Some(activity.id().to_owned());
+                traversal.activity_cursor = Some(*sequence);
                 traversal.next_collection = PaymentCollection::Address;
                 let mut observed = match activity {
                     ActivityRecovery::Intent(intent) => intent.activity.clone(),
@@ -264,6 +250,25 @@ pub(crate) async fn progress_payment_intents_with_traversal(
         }
     }
     Ok(())
+}
+
+/// Unresolved activity in the order it was accepted. A send can depend on funds
+/// from a payment accepted just before it, so that payment must be dispatched
+/// first; ids are random UUIDs and say nothing about acceptance order.
+pub(crate) fn queued_activities(store: &Store) -> anyhow::Result<Vec<(i64, ActivityRecovery)>> {
+    let mut activities: Vec<_> = store
+        .sequenced_unresolved_activities()?
+        .into_iter()
+        .map(|(sequence, intent)| (sequence, ActivityRecovery::Intent(intent)))
+        .collect();
+    activities.extend(
+        store
+            .unconfirmed_legacy_activities()?
+            .into_iter()
+            .map(|(sequence, legacy)| (sequence, ActivityRecovery::Legacy(legacy))),
+    );
+    activities.sort_by_key(|(sequence, _)| *sequence);
+    Ok(activities)
 }
 
 pub(crate) fn notify_activity_change(state: &AppState, previous: &Activity) -> anyhow::Result<()> {
@@ -418,6 +423,12 @@ pub(crate) async fn can_fail_insufficient_send_after_preparation(
         );
     }
     if current.status != "preparing" || !current.txid.is_empty() {
+        return Ok(false);
+    }
+    // Acceptance order dispatches an earlier credit first, but it can still be
+    // unresolved: it may have run out of dispatch budget, or be waiting to
+    // confirm. Keep the send preparing so it is retried once that credit settles.
+    if state.0.store.has_earlier_unresolved_credit(activity_id)? {
         return Ok(false);
     }
     let Some(prepared) = wallet_prepared else {

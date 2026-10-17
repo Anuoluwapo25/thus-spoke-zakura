@@ -758,3 +758,236 @@ async fn insufficient_send_keeps_the_uncertain_original_lookup_error_pending() {
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }
+
+const EARLIER_FAUCET_ID: &str = "ffffffff-ffff-4fff-bfff-ffffffffffff";
+const DEPENDENT_SEND_ID: &str = "00000000-0000-4000-8000-000000000000";
+
+/// Accepts a faucet into account 2 and then a send from account 2 that needs
+/// it, with ids that sort in the opposite order to acceptance.
+fn accept_faucet_then_dependent_send(state: &AppState, dir: &std::path::Path) {
+    let faucet = state
+        .0
+        .store
+        .claim_faucet(2, "ironwood", 300_000_000, "earlier-faucet")
+        .unwrap();
+    let send = state
+        .0
+        .store
+        .claim_transfer(
+            2,
+            Recipient::Account(3),
+            "ironwood",
+            "ironwood",
+            100_000_000,
+            "dependent-send",
+            None,
+        )
+        .unwrap();
+    let db = rusqlite::Connection::open(dir.join("server.db")).unwrap();
+    for (from, to) in [
+        (faucet.id.as_str(), EARLIER_FAUCET_ID),
+        (send.id.as_str(), DEPENDENT_SEND_ID),
+    ] {
+        db.execute("UPDATE activity SET id=?2 WHERE id=?1", [from, to])
+            .unwrap();
+        db.execute(
+            "UPDATE idempotency SET activity_id=?2 WHERE activity_id=?1",
+            [from, to],
+        )
+        .unwrap();
+    }
+}
+
+/// Uses the real insufficient-funds policy, with submission and mining
+/// settled directly in the store.
+struct StoreSettledLifecycle<'a>(&'a AppState);
+
+#[async_trait::async_trait]
+impl crate::payments::execution::PaymentLifecycle for StoreSettledLifecycle<'_> {
+    async fn submit_prepared(
+        &self,
+        activity: &Activity,
+    ) -> anyhow::Result<crate::payments::submission::PreparedSubmission> {
+        Ok(crate::payments::submission::PreparedSubmission::Broadcast(
+            self.0
+                .0
+                .store
+                .mark_broadcast(&activity.id, &activity.txid)?,
+        ))
+    }
+
+    fn record_preparation_error(&self, id: &str, error: &str) -> anyhow::Result<()> {
+        crate::payments::execution::PaymentLifecycle::record_preparation_error(self.0, id, error)
+    }
+
+    fn record_prepared(&self, id: &str, prepared: &PreparedPayment) -> anyhow::Result<Activity> {
+        crate::payments::execution::PaymentLifecycle::record_prepared(self.0, id, prepared)
+    }
+
+    async fn confirm_after_mining(&self, activity: Activity) -> anyhow::Result<Activity> {
+        self.0
+            .0
+            .store
+            .confirm(&activity.id, &activity.txid, "dependent-block")
+    }
+
+    async fn fail_insufficient_send(
+        &self,
+        activity: &Activity,
+        error: &str,
+        replacement_txid: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        crate::payments::execution::PaymentLifecycle::fail_insufficient_send(
+            self.0,
+            activity,
+            error,
+            replacement_txid,
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn background_dispatch_follows_acceptance_order_not_id_order() {
+    let (state, dir) = state_with_local_wallet();
+    accept_faucet_then_dependent_send(&state, dir.path());
+
+    let queued = queued_activities(&state.0.store).unwrap();
+    let ids: Vec<_> = queued.iter().map(|(_, activity)| activity.id()).collect();
+    assert_eq!(ids, [EARLIER_FAUCET_ID, DEPENDENT_SEND_ID]);
+    let (faucet_sequence, send_sequence) = (queued[0].0, queued[1].0);
+
+    // Lightwalletd is unreachable, so each dispatch fails fast and stays pending.
+    // The cursor is left on the activity dispatched last.
+    let mut activity_cursor = None;
+    progress_payment_intents(
+        &state,
+        Instant::now() + PAYMENT_DISPATCH_BUDGET,
+        &mut activity_cursor,
+        &mut None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(activity_cursor, Some(send_sequence));
+
+    // Round robin resumes after the cursor in acceptance order.
+    let mut activity_cursor = Some(faucet_sequence);
+    progress_payment_intents(
+        &state,
+        Instant::now() + PAYMENT_DISPATCH_BUDGET,
+        &mut activity_cursor,
+        &mut None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(activity_cursor, Some(faucet_sequence));
+
+    for key in ["earlier-faucet", "dependent-send"] {
+        let pending = state.0.store.activity_for_key(key).unwrap().unwrap();
+        assert_eq!(pending.status, "preparing");
+        assert!(pending.last_error.is_some());
+    }
+}
+
+#[tokio::test]
+async fn dependent_send_waits_for_the_earlier_faucet_and_confirms() {
+    let (state, dir) = state_with_local_wallet();
+    accept_faucet_then_dependent_send(&state, dir.path());
+    let lifecycle = StoreSettledLifecycle(&state);
+    let store = &state.0.store;
+
+    // The send reaches preparation before the faucet has funded account 2, as
+    // it did whenever its id sorted first.
+    let early = execute_payment(
+        &lifecycle,
+        store.activity(DEPENDENT_SEND_ID).unwrap(),
+        |_, _| {
+            std::future::ready(Err(anyhow::Error::new(PaymentError::InsufficientFunds {
+                available: 0,
+                required: 100_010_000,
+            })))
+        },
+    )
+    .await;
+    assert!(early.is_err());
+    let pending = store.activity_for_key("dependent-send").unwrap().unwrap();
+    assert_eq!(pending.status, "preparing");
+    assert!(
+        pending
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("insufficient")
+    );
+
+    let faucet = execute_payment(
+        &lifecycle,
+        store.activity(EARLIER_FAUCET_ID).unwrap(),
+        |_, _| {
+            std::future::ready(Ok(PreparedPayment {
+                txid: "earlier-faucet-txid".into(),
+                raw_transaction: "earlier-faucet-raw".into(),
+                expiry_height: 140,
+            }))
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(faucet.status, "confirmed");
+
+    let send = execute_payment(&lifecycle, pending, |_, _| {
+        std::future::ready(Ok(PreparedPayment {
+            txid: "dependent-send-txid".into(),
+            raw_transaction: "dependent-send-raw".into(),
+            expiry_height: 140,
+        }))
+    })
+    .await
+    .unwrap();
+    assert_eq!(send.id, DEPENDENT_SEND_ID);
+    assert_eq!(send.status, "confirmed");
+    assert_eq!(send.block_hash.as_deref(), Some("dependent-block"));
+}
+
+#[tokio::test]
+async fn insufficient_send_waits_only_for_earlier_unresolved_credits_to_its_source_pool() {
+    let (state, _dir) = state_with_local_wallet();
+    let store = &state.0.store;
+    store
+        .claim_faucet(2, "transparent", 12_000, "other-pool-credit")
+        .unwrap();
+    store
+        .claim_faucet(4, "ironwood", 12_000, "other-account-credit")
+        .unwrap();
+    let credit = store
+        .claim_faucet(2, "ironwood", 12_000, "source-pool-credit")
+        .unwrap();
+    store
+        .record_prepared(&credit.id, "source-pool-credit-txid", b"signed", 140)
+        .unwrap();
+    store
+        .mark_broadcast(&credit.id, "source-pool-credit-txid")
+        .unwrap();
+    let send = store
+        .claim_transfer(
+            2,
+            Recipient::Account(3),
+            "ironwood",
+            "ironwood",
+            12_000,
+            "credit-policy-send",
+            None,
+        )
+        .unwrap();
+    store
+        .claim_faucet(2, "ironwood", 12_000, "later-credit")
+        .unwrap();
+
+    // A broadcast credit has not reached the wallet yet, so it still counts.
+    assert!(!can_fail_insufficient_send(&state, &send.id).await.unwrap());
+
+    store
+        .confirm(&credit.id, "source-pool-credit-txid", "credit-block")
+        .unwrap();
+    assert!(can_fail_insufficient_send(&state, &send.id).await.unwrap());
+}
