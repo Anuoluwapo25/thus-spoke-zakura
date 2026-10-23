@@ -17,7 +17,7 @@ use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     time::{Duration, Instant},
 };
 pub(crate) async fn health(State(state): State<AppState>) -> Response {
@@ -237,6 +237,45 @@ fn only_account(accounts: &[u8]) -> Option<u8> {
     }
 }
 
+fn only_pool(pools: &[String]) -> Option<String> {
+    match pools {
+        [pool] => Some(pool.clone()),
+        _ => None,
+    }
+}
+
+/// Visible recipient accounts, recipient addresses and destination pools of a
+/// journal entry, sorted and unique. A batch names them in its outputs.
+fn journal_recipients(activity: &Activity) -> (Vec<u8>, Vec<String>, Vec<String>) {
+    if activity.outputs.is_empty() {
+        return (
+            visible_account(activity.to_account).into_iter().collect(),
+            activity.to_address.iter().cloned().collect(),
+            vec![activity.destination_pool.clone()],
+        );
+    }
+    let accounts = activity
+        .outputs
+        .iter()
+        .filter_map(|output| visible_account(output.to_account))
+        .collect::<BTreeSet<_>>();
+    let addresses = activity
+        .outputs
+        .iter()
+        .filter_map(|output| output.to_address.clone())
+        .collect::<BTreeSet<_>>();
+    let pools = activity
+        .outputs
+        .iter()
+        .map(|output| output.destination_pool.clone())
+        .collect::<BTreeSet<_>>();
+    (
+        accounts.into_iter().collect(),
+        addresses.into_iter().collect(),
+        pools.into_iter().collect(),
+    )
+}
+
 fn activity_direction(kind: &str, from_accounts: &[u8], to_accounts: &[u8]) -> &'static str {
     if kind == "faucet" {
         "incoming"
@@ -254,25 +293,27 @@ fn activity_direction(kind: &str, from_accounts: &[u8], to_accounts: &[u8]) -> &
 impl ActivityEntry {
     fn journal(activity: Activity) -> Self {
         let from_account = visible_account(activity.from_account);
-        let to_account = visible_account(activity.to_account);
         let from_accounts = from_account.into_iter().collect::<Vec<_>>();
-        let to_accounts = to_account.into_iter().collect::<Vec<_>>();
+        let (to_accounts, recipient_addresses, destination_pools) = journal_recipients(&activity);
         let direction = activity_direction(&activity.kind, &from_accounts, &to_accounts).to_owned();
-        let recipient_addresses = activity.to_address.iter().cloned().collect();
+        let to_address = match (to_accounts.as_slice(), recipient_addresses.as_slice()) {
+            ([], [address]) => Some(address.clone()),
+            _ => None,
+        };
         Self {
             id: activity.id,
             kind: activity.kind,
             direction,
             from_account,
-            to_account,
+            to_account: only_account(&to_accounts),
             from_accounts,
             to_accounts,
-            to_address: activity.to_address,
+            to_address,
             recipient_addresses,
             source_pool: Some(activity.source_pool.clone()),
-            destination_pool: Some(activity.destination_pool.clone()),
+            destination_pool: only_pool(&destination_pools),
             source_pools: vec![activity.source_pool],
-            destination_pools: vec![activity.destination_pool],
+            destination_pools,
             amount_zatoshi: activity.amount_zatoshi,
             received_zatoshi: None,
             spent_zatoshi: None,
@@ -334,6 +375,7 @@ impl ActivityEntry {
     }
 
     fn merge_journal(mut self, journal: Activity) -> Self {
+        let (to_accounts, recipient_addresses, destination_pools) = journal_recipients(&journal);
         self.id = journal.id;
         self.kind = journal.kind;
         if let Some(account) = visible_account(journal.from_account)
@@ -342,12 +384,12 @@ impl ActivityEntry {
             self.from_accounts.push(account);
             self.from_accounts.sort_unstable();
         }
-        if let Some(account) = visible_account(journal.to_account)
-            && !self.to_accounts.contains(&account)
-        {
-            self.to_accounts.push(account);
-            self.to_accounts.sort_unstable();
+        for account in to_accounts {
+            if !self.to_accounts.contains(&account) {
+                self.to_accounts.push(account);
+            }
         }
+        self.to_accounts.sort_unstable();
         self.from_account = only_account(&self.from_accounts);
         self.to_account = only_account(&self.to_accounts);
         self.direction =
@@ -357,16 +399,16 @@ impl ActivityEntry {
         } else {
             journal.to_address.clone().or(self.to_address)
         };
-        if let Some(address) = journal.to_address.as_ref()
-            && !self.recipient_addresses.contains(address)
-        {
-            self.recipient_addresses.push(address.clone());
-            self.recipient_addresses.sort();
+        for address in recipient_addresses {
+            if !self.recipient_addresses.contains(&address) {
+                self.recipient_addresses.push(address);
+            }
         }
+        self.recipient_addresses.sort();
         self.source_pool = Some(journal.source_pool.clone());
-        self.destination_pool = Some(journal.destination_pool.clone());
+        self.destination_pool = only_pool(&destination_pools);
         self.source_pools = vec![journal.source_pool];
-        self.destination_pools = vec![journal.destination_pool];
+        self.destination_pools = destination_pools;
         self.amount_zatoshi = journal.amount_zatoshi;
         self.block_hash = self.block_hash.or(journal.block_hash);
         if self.mined_height.is_none() {

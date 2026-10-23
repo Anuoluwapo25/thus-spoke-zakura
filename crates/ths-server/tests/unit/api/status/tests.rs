@@ -1,5 +1,6 @@
 use super::*;
 use crate::api::router;
+use crate::db::ActivityOutput;
 use crate::mining::MiningMode;
 use crate::network::regtest_network;
 use crate::state::tests::{state_with_local_wallet, state_with_mode};
@@ -36,6 +37,7 @@ fn journal_send(txid: &str) -> Activity {
         status: "confirmed".to_owned(),
         created_at: "2026-10-15 10:00:00".to_owned(),
         last_error: None,
+        outputs: Vec::new(),
     }
 }
 
@@ -1081,3 +1083,69 @@ async fn health_and_chain_effects_wait_until_startup_finishes() {
 }
 
 use crate::api::payments::tests::valid_send;
+
+fn journal_batch(txid: &str) -> Activity {
+    let output = |to_account, to_address: Option<&str>, destination_pool: &str| ActivityOutput {
+        to_account,
+        to_address: to_address.map(str::to_owned),
+        destination_pool: destination_pool.to_owned(),
+        amount_zatoshi: 100_000_000,
+        memo: None,
+    };
+    Activity {
+        id: "batch-1".to_owned(),
+        to_account: None,
+        destination_pool: "mixed".to_owned(),
+        amount_zatoshi: 300_000_000,
+        status: "broadcast".to_owned(),
+        block_hash: None,
+        outputs: vec![
+            output(Some(2), None, "ironwood"),
+            output(Some(3), None, "transparent"),
+            output(None, Some("uregtest1external"), "ironwood"),
+        ],
+        ..journal_send(txid)
+    }
+}
+
+#[test]
+fn pending_batch_lists_every_recipient_and_pool() {
+    let activity = unified_activity(vec![journal_batch("")], Vec::new(), 30);
+
+    assert_eq!(activity.len(), 1);
+    let entry = &activity[0];
+    assert_eq!(entry.id, "batch-1");
+    assert_eq!(entry.direction, "internal");
+    assert_eq!(entry.to_account, None);
+    assert_eq!(entry.to_accounts, [2, 3]);
+    assert_eq!(entry.to_address, None);
+    assert_eq!(entry.recipient_addresses, ["uregtest1external"]);
+    assert_eq!(entry.destination_pool, None);
+    assert_eq!(entry.destination_pools, ["ironwood", "transparent"]);
+    assert_eq!(entry.amount_zatoshi, 300_000_000);
+    let json = serde_json::to_value(entry).unwrap();
+    assert!(!json.to_string().contains("mixed"), "{json}");
+}
+
+#[test]
+fn mined_batch_keeps_every_recipient_and_pool() {
+    let mut canonical = canonical_activity("internal", "batch-tx");
+    canonical.to_account = None;
+    canonical.to_accounts = vec![2, 3];
+    canonical.destination_pools = vec!["ironwood".into(), "transparent".into()];
+
+    let activity = unified_activity(vec![journal_batch("batch-tx")], vec![canonical], 30);
+
+    assert_eq!(activity.len(), 1);
+    let entry = &activity[0];
+    assert_eq!(entry.id, "batch-1");
+    assert_eq!(entry.to_accounts, [2, 3]);
+    assert!(
+        entry
+            .recipient_addresses
+            .contains(&"uregtest1external".to_owned())
+    );
+    assert_eq!(entry.destination_pool, None);
+    assert_eq!(entry.destination_pools, ["ironwood", "transparent"]);
+    assert_eq!(entry.amount_zatoshi, 300_000_000);
+}
