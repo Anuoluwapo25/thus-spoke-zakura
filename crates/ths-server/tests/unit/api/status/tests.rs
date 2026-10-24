@@ -279,10 +279,7 @@ fn canonical_activity_preserves_every_recipient_address() {
         activity[0].recipient_addresses,
         ["uregtest1external1", "uregtest1external2"]
     );
-    assert_eq!(
-        activity[0].to_address.as_deref(),
-        Some("uregtest1external1")
-    );
+    assert_eq!(activity[0].to_address, None);
 }
 
 #[test]
@@ -1148,4 +1145,76 @@ fn mined_batch_keeps_every_recipient_and_pool() {
     assert_eq!(entry.destination_pool, None);
     assert_eq!(entry.destination_pools, ["ironwood", "transparent"]);
     assert_eq!(entry.amount_zatoshi, 300_000_000);
+}
+
+fn journal_external_batch(txid: &str) -> Activity {
+    let output = |to_address: &str| ActivityOutput {
+        to_account: None,
+        to_address: Some(to_address.to_owned()),
+        destination_pool: "ironwood".to_owned(),
+        amount_zatoshi: 100_000_000,
+        memo: None,
+    };
+    Activity {
+        id: "batch-external".to_owned(),
+        to_account: None,
+        to_address: None,
+        destination_pool: "ironwood".to_owned(),
+        amount_zatoshi: 200_000_000,
+        status: "broadcast".to_owned(),
+        block_hash: None,
+        outputs: vec![output("uregtest1first"), output("uregtest1second")],
+        ..journal_send(txid)
+    }
+}
+
+fn canonical_external_batch(txid: &str, mined_height: Option<u32>) -> CanonicalActivity {
+    let mut canonical = canonical_activity("outgoing", txid);
+    canonical.to_account = None;
+    canonical.to_accounts = Vec::new();
+    canonical.recipient_addresses = vec!["uregtest1first".into(), "uregtest1second".into()];
+    canonical.mined_height = mined_height;
+    canonical
+}
+
+fn assert_no_single_external_recipient(entry: &ActivityEntry) {
+    assert_eq!(entry.id, "batch-external");
+    assert_eq!(entry.to_account, None);
+    assert!(entry.to_accounts.is_empty());
+    assert_eq!(entry.to_address, None);
+    assert_eq!(
+        entry.recipient_addresses,
+        ["uregtest1first", "uregtest1second"]
+    );
+    assert_eq!(entry.amount_zatoshi, 200_000_000);
+}
+
+#[test]
+fn pending_batch_to_several_addresses_has_no_single_to_address() {
+    let journal_only = unified_activity(vec![journal_external_batch("")], Vec::new(), 30);
+    assert_eq!(journal_only.len(), 1);
+    assert_no_single_external_recipient(&journal_only[0]);
+    assert_eq!(journal_only[0].status, "broadcast");
+
+    let in_mempool = unified_activity(
+        vec![journal_external_batch("batch-tx")],
+        vec![canonical_external_batch("batch-tx", None)],
+        30,
+    );
+    assert_eq!(in_mempool.len(), 1);
+    assert_no_single_external_recipient(&in_mempool[0]);
+    assert_eq!(in_mempool[0].status, "broadcast");
+}
+
+#[test]
+fn confirmed_batch_to_several_addresses_has_no_single_to_address() {
+    let activity = unified_activity(
+        vec![journal_external_batch("batch-tx")],
+        vec![canonical_external_batch("batch-tx", Some(120))],
+        30,
+    );
+
+    assert_eq!(activity.len(), 1);
+    assert_no_single_external_recipient(&activity[0]);
+    assert_eq!(activity[0].status, "confirmed");
 }

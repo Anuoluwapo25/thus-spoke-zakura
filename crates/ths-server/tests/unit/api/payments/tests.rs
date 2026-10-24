@@ -1247,6 +1247,14 @@ fn send_uri_outputs_reject_the_whole_request_for_any_invalid_payment() {
             None,
         ),
         ("not a uri".to_owned(), Some("Invalid payment URI")),
+        (
+            "zcash:".to_owned(),
+            Some("Payment URI must contain at least one recipient"),
+        ),
+        (
+            "zcash:?".to_owned(),
+            Some("Payment URI must contain at least one recipient"),
+        ),
     ];
     for (uri, message) in cases {
         let error = send_uri_outputs(&store, 1, "ironwood", &uri).expect_err(&uri);
@@ -1366,6 +1374,14 @@ async fn uri_send_rejects_mixed_fields_and_invalid_payments_without_claiming() {
     for (name, body) in cases {
         let (status, response) = post_send(&state, &body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {response}");
+    }
+    for empty in ["zcash:", "zcash:?"] {
+        let (status, response) = post_send(&state, &with("uri", json!(empty))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{empty}: {response}");
+        assert_eq!(
+            response["error"]["message"], "Payment URI must contain at least one recipient",
+            "{empty}"
+        );
     }
     assert!(activity_ids(&state).is_empty());
 

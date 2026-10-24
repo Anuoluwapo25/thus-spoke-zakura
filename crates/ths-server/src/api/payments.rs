@@ -185,6 +185,12 @@ fn send_uri_outputs(
     uri: &str,
 ) -> ApiResult<Vec<ActivityOutput>> {
     let request = parse_transaction_request(uri)?;
+    // zip321 parses `zcash:` and `zcash:?` as a request with no payments.
+    if request.payments().is_empty() {
+        return Err(ApiError::bad_request(
+            "Payment URI must contain at least one recipient",
+        ));
+    }
     let mut total = 0u64;
     let mut outputs = request
         .payments()

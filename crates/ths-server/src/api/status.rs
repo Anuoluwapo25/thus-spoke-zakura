@@ -244,6 +244,16 @@ fn only_pool(pools: &[String]) -> Option<String> {
     }
 }
 
+/// The one external address an entry pays, if it pays no development account
+/// and exactly one address. A batch to several addresses has no single
+/// recipient, so its `to_address` stays null and `recipient_addresses` names them.
+fn single_recipient_address(to_accounts: &[u8], addresses: &[String]) -> Option<String> {
+    match (to_accounts, addresses) {
+        ([], [address]) => Some(address.clone()),
+        _ => None,
+    }
+}
+
 /// Visible recipient accounts, recipient addresses and destination pools of a
 /// journal entry, sorted and unique. A batch names them in its outputs.
 fn journal_recipients(activity: &Activity) -> (Vec<u8>, Vec<String>, Vec<String>) {
@@ -296,10 +306,7 @@ impl ActivityEntry {
         let from_accounts = from_account.into_iter().collect::<Vec<_>>();
         let (to_accounts, recipient_addresses, destination_pools) = journal_recipients(&activity);
         let direction = activity_direction(&activity.kind, &from_accounts, &to_accounts).to_owned();
-        let to_address = match (to_accounts.as_slice(), recipient_addresses.as_slice()) {
-            ([], [address]) => Some(address.clone()),
-            _ => None,
-        };
+        let to_address = single_recipient_address(&to_accounts, &recipient_addresses);
         Self {
             id: activity.id,
             kind: activity.kind,
@@ -332,11 +339,7 @@ impl ActivityEntry {
 
     fn canonical(activity: CanonicalActivity) -> Self {
         let recipient_addresses = activity.recipient_addresses;
-        let to_address = activity
-            .to_accounts
-            .is_empty()
-            .then(|| recipient_addresses.first().cloned())
-            .flatten();
+        let to_address = single_recipient_address(&activity.to_accounts, &recipient_addresses);
         Self {
             id: format!("wallet:{}", activity.txid),
             kind: "transaction".to_owned(),
@@ -396,8 +399,12 @@ impl ActivityEntry {
             activity_direction(&self.kind, &self.from_accounts, &self.to_accounts).to_owned();
         self.to_address = if !self.to_accounts.is_empty() {
             None
-        } else {
+        } else if journal.outputs.is_empty() {
             journal.to_address.clone().or(self.to_address)
+        } else {
+            // A batch names its recipients in its outputs, so the chain's
+            // first address must not stand in for several.
+            single_recipient_address(&[], &recipient_addresses)
         };
         for address in recipient_addresses {
             if !self.recipient_addresses.contains(&address) {

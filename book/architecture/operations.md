@@ -74,7 +74,8 @@ A `POST /api/v1/send` body with `uri` replaces `to_account`, `to_address`,
   address, a positive amount the URI sets explicitly, at least 54 zatoshi for a
   transparent output, a text memo only for Ironwood, and no return to the source
   account in the source pool. One invalid payment rejects the whole request
-  with HTTP 400, so there is no partial payout.
+  with HTTP 400, so there is no partial payout. A URI with no payments, such
+  as `zcash:` or `zcash:?`, is rejected with HTTP 400 too.
 - A URI with one payment is recorded as an ordinary send, so it replays like
   the same send made with explicit fields.
 - With two or more payments, the claim stores the complete output list with
@@ -172,9 +173,13 @@ these journal records with transactions observed by the wallet and adds chain
 metadata, memos, recipient and pool lists, and `from_accounts` and
 `to_accounts`. The arrays preserve every affected development account;
 `from_account` and `to_account` are only populated when their corresponding
-array contains exactly one account. A transaction appears once even when it
-affects multiple development accounts. Outputs to the hidden treasury account
-are excluded from the user-facing amount, recipients, and account lists.
+array contains exactly one account. Likewise, `to_address` is set only when the
+entry pays no development account and exactly one external address. A batch to
+several addresses keeps it `null`, pending or confirmed, and lists them in
+`recipient_addresses`; the dashboard shows such a row as "N recipients". A
+transaction appears once even when it affects multiple development accounts.
+Outputs to the hidden treasury account are excluded from the user-facing
+amount, recipients, and account lists.
 
 `amount_zatoshi` remains the value paid to the relevant user or external
 recipient. Canonical wallet entries additionally expose the aggregate effects
