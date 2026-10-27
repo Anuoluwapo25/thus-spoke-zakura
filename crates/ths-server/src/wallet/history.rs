@@ -135,7 +135,15 @@ fn summarize_outputs(outputs: &[Output]) -> Result<OutputSummary> {
         to_account: only(&to_accounts),
         from_accounts,
         to_accounts,
-        recipient_addresses: unique(relevant.iter().filter_map(|output| output.address.clone())),
+        // A development account is named by `to_accounts`, so only external
+        // addresses are listed. Journal entries list the same, so a batch's
+        // recipients read the same before and after it is mined.
+        recipient_addresses: unique(
+            relevant
+                .iter()
+                .filter(|output| output.to_account.is_none())
+                .filter_map(|output| output.address.clone()),
+        ),
         destination_pools: unique(relevant.iter().filter_map(|output| output.pool.clone())),
         amount_zatoshi,
         memos: unique(relevant.iter().filter_map(|output| output.memo.clone())),
@@ -360,8 +368,20 @@ mod tests {
         let summary = summarize_outputs(&[user, treasury]).unwrap();
 
         assert_eq!(summary.to_accounts, [2]);
-        assert_eq!(summary.recipient_addresses, ["uregtest1account2"]);
+        assert!(summary.recipient_addresses.is_empty());
         assert_eq!(summary.amount_zatoshi, 100_000_000);
+    }
+
+    #[test]
+    fn recipient_addresses_list_only_external_addresses() {
+        let summary = summarize_outputs(&[
+            output(Some(2), "uregtest1account2", 100_000_000),
+            output(None, "uregtest1external", 200_000_000),
+        ])
+        .unwrap();
+
+        assert_eq!(summary.to_accounts, [2]);
+        assert_eq!(summary.recipient_addresses, ["uregtest1external"]);
     }
 
     #[test]

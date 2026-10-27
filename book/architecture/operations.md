@@ -173,10 +173,12 @@ these journal records with transactions observed by the wallet and adds chain
 metadata, memos, recipient and pool lists, and `from_accounts` and
 `to_accounts`. The arrays preserve every affected development account;
 `from_account` and `to_account` are only populated when their corresponding
-array contains exactly one account. Likewise, `to_address` is set only when the
-entry pays no development account and exactly one external address. A batch to
-several addresses keeps it `null`, pending or confirmed, and lists them in
-`recipient_addresses`; the dashboard shows such a row as "N recipients". A
+array contains exactly one account. `recipient_addresses` lists only external
+addresses, pending or confirmed; a development account appears in `to_accounts`
+instead. Likewise, `to_address` is set only when the entry pays no development
+account and exactly one external address. A batch to several addresses, or to
+both accounts and addresses, keeps it `null`; the dashboard shows such a row as
+"N recipients". A
 transaction appears once even when it affects multiple development accounts.
 Outputs to the hidden treasury account are excluded from the user-facing
 amount, recipients, and account lists.

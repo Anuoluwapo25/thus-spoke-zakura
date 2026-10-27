@@ -4,6 +4,7 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -410,18 +411,34 @@ fn recipient(to_account: Option<u8>, to_address: Option<&str>) -> String {
     }
 }
 
-/// ZIP-321 names every payment after the first with an indexed parameter such
-/// as `address.1`, so a URI with one pays more than one recipient.
+/// Whether a ZIP-321 URI holds more than one payment. Every payment has
+/// exactly one address: the path or `address` for index 0, `address.N` for
+/// index N. An index alone does not make a batch, since `zcash:?address.1=…`
+/// is a single payment.
 pub(crate) fn is_multi_payment_uri(uri: &str) -> bool {
-    uri.split_once('?').is_some_and(|(_, query)| {
-        query.split('&').any(|parameter| {
-            parameter
-                .split_once('=')
-                .map_or(parameter, |(name, _)| name)
-                .split_once('.')
-                .is_some_and(|(name, index)| name == "address" && !index.is_empty() && index != "0")
-        })
-    })
+    let (path, query) = uri.split_once('?').unwrap_or((uri, ""));
+    let mut indexes = BTreeSet::new();
+    if path
+        .split_once(':')
+        .is_some_and(|(_, address)| !address.is_empty())
+    {
+        indexes.insert("");
+    }
+    for parameter in query.split('&') {
+        let name = parameter
+            .split_once('=')
+            .map_or(parameter, |(name, _)| name);
+        match name.split_once('.') {
+            None if name == "address" => {
+                indexes.insert("");
+            }
+            Some(("address", index)) => {
+                indexes.insert(index);
+            }
+            _ => {}
+        }
+    }
+    indexes.len() > 1
 }
 
 /// A single-payment ZIP-321 URI as resolved by the server.

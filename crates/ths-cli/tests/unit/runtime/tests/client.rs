@@ -2374,6 +2374,40 @@ fn multi_recipient_uris_are_sent_whole_without_parsing() {
 }
 
 #[test]
+fn an_indexed_single_payment_uri_takes_the_single_payment_path() {
+    const URI: &str = "zcash:?address.1=uregtest1external";
+    const PARSED: &str = r#"{"address":"uregtest1external","destination_pool":"ironwood","amount_zatoshi":null,"memo":null}"#;
+    const CONFIRMED: &str = r#"{"id":"indexed-send","kind":"send","from_account":1,"to_account":null,"to_address":"uregtest1external","source_pool":"ironwood","destination_pool":"ironwood","amount_zatoshi":123,"txid":"indexed-txid","block_hash":"block","status":"confirmed","last_error":null}"#;
+    let (_dir, runtime, alpha) = payment_runtime();
+    let (url, requests) = serve(vec![("200 OK", PARSED), ("200 OK", CONFIRMED)]);
+
+    runtime
+        .wallet_send_uri_with(
+            &alpha,
+            &url,
+            &reqwest::blocking::Client::new(),
+            1,
+            "ironwood",
+            URI,
+            Some(TransferAmount::Exact(123)),
+            true,
+        )
+        .unwrap();
+
+    let requests: Vec<_> = requests.try_iter().collect();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[0].0.starts_with("POST /api/v1/zip321/parse "),
+        "{}",
+        requests[0].0
+    );
+    let body: serde_json::Value = serde_json::from_str(&requests[1].1).unwrap();
+    assert_eq!(body["to_address"], "uregtest1external");
+    assert_eq!(body["amount_zatoshi"], 123);
+    assert!(body.get("uri").is_none(), "{body}");
+}
+
+#[test]
 fn multi_recipient_uris_reject_amount_and_max_before_any_request() {
     let (_dir, runtime, alpha) = payment_runtime();
     for amount in [TransferAmount::Exact(1), TransferAmount::Max] {
@@ -2429,15 +2463,17 @@ fn batch_send_output_lists_every_recipient() {
 }
 
 #[test]
-fn indexed_address_parameters_mark_a_multi_payment_uri() {
+fn distinct_address_indexes_mark_a_multi_payment_uri() {
     for (uri, multi) in [
         ("zcash:uregtest1a?amount=1", false),
         ("zcash:?address=uregtest1a&amount=1", false),
         ("zcash:?address=a&amount=1&address.1=b&amount.1=2", true),
         ("zcash:?amount.2=2&address.2=b&address=a", true),
+        ("zcash:a?address.1=b", true),
+        ("zcash:?address.1=a&address.2=b", true),
+        ("zcash:?address.1=a", false),
+        ("zcash:?address.1=a&amount.1=1&memo.1=bWVtbw", false),
         ("zcash:?address=a&memo.1=bWVtbw", false),
-        ("zcash:?address.0=a", false),
-        ("zcash:?address.=a", false),
         ("zcash:address.1", false),
     ] {
         assert_eq!(is_multi_payment_uri(uri), multi, "{uri}");

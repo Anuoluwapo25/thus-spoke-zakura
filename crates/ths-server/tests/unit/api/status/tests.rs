@@ -100,7 +100,6 @@ fn internal_transfer_is_returned_once_with_both_accounts() {
     let mut canonical = canonical_activity("outgoing", "internal-tx");
     canonical.to_account = None;
     canonical.to_accounts.clear();
-    canonical.recipient_addresses = vec!["uregtest1account2".to_owned()];
     let activity = unified_activity(
         vec![journal_send("internal-tx")],
         vec![canonical.clone(), canonical],
@@ -116,7 +115,7 @@ fn internal_transfer_is_returned_once_with_both_accounts() {
     assert_eq!(activity[0].from_accounts, [1]);
     assert_eq!(activity[0].to_accounts, [2]);
     assert_eq!(activity[0].to_address, None);
-    assert_eq!(activity[0].recipient_addresses, ["uregtest1account2"]);
+    assert!(activity[0].recipient_addresses.is_empty());
 }
 
 #[test]
@@ -126,10 +125,6 @@ fn multi_account_transaction_preserves_every_affected_account() {
     canonical.to_account = None;
     canonical.from_accounts.clear();
     canonical.to_accounts = vec![2, 3];
-    canonical.recipient_addresses = vec![
-        "uregtest1account2".to_owned(),
-        "uregtest1account3".to_owned(),
-    ];
     canonical.amount_zatoshi = 300_000_000;
 
     let activity = unified_activity(Vec::new(), vec![canonical], 30);
@@ -168,7 +163,6 @@ fn external_incoming_and_unresolved_journal_entries_are_both_retained() {
     incoming.from_accounts.clear();
     incoming.to_account = Some(3);
     incoming.to_accounts = vec![3];
-    incoming.recipient_addresses = vec!["uregtest1account3".to_owned()];
     let mut pending = journal_send("");
     pending.status = "preparing".to_owned();
     pending.last_error = Some("wallet is syncing".to_owned());
@@ -180,7 +174,7 @@ fn external_incoming_and_unresolved_journal_entries_are_both_retained() {
         entry.to_account == Some(3)
             && entry.direction == "incoming"
             && entry.txid == "external-tx"
-            && entry.recipient_addresses == ["uregtest1account3"]
+            && entry.recipient_addresses.is_empty()
     }));
     assert!(activity.iter().any(|entry| {
         entry.id == "send-1"
@@ -1137,11 +1131,7 @@ fn mined_batch_keeps_every_recipient_and_pool() {
     let entry = &activity[0];
     assert_eq!(entry.id, "batch-1");
     assert_eq!(entry.to_accounts, [2, 3]);
-    assert!(
-        entry
-            .recipient_addresses
-            .contains(&"uregtest1external".to_owned())
-    );
+    assert_eq!(entry.recipient_addresses, ["uregtest1external"]);
     assert_eq!(entry.destination_pool, None);
     assert_eq!(entry.destination_pools, ["ironwood", "transparent"]);
     assert_eq!(entry.amount_zatoshi, 300_000_000);

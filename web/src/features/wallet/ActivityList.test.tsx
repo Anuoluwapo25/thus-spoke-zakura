@@ -189,6 +189,51 @@ describe('ActivityList multi-recipient batches', () => {
     expect(within(row!).getByText(status)).toBeInTheDocument();
     expect(screen.queryByText(/Account 1 → —/)).not.toBeInTheDocument();
   });
+
+  it.each([
+    ['broadcast', 'bc'.repeat(32)],
+    ['confirmed', 'bd'.repeat(32)],
+  ] as const)(
+    'counts both recipients of a %s batch to an account and an address',
+    (status, txid) => {
+      renderWithProviders(
+        <MemoryRouter>
+          <ActivityList
+            activity={{
+              isPending: false,
+              isError: false,
+              error: null,
+              data: [
+                {
+                  id: 'batch-mixed',
+                  kind: 'send',
+                  direction: 'internal',
+                  from_account: 1,
+                  to_account: 2,
+                  from_accounts: [1],
+                  to_accounts: [2],
+                  to_address: null,
+                  recipient_addresses: ['uregtest1external'],
+                  source_pool: 'ironwood',
+                  destination_pool: 'ironwood',
+                  amount_zatoshi: 300_000_000n,
+                  txid,
+                  block_hash: status === 'confirmed' ? 'ce'.repeat(32) : null,
+                  mined_height: status === 'confirmed' ? 122 : null,
+                  status,
+                  last_error: null,
+                  created_at: '2026-10-02 12:00:00',
+                },
+              ],
+            }}
+          />
+        </MemoryRouter>,
+      );
+
+      expect(screen.getByText('Account 1 → 2 recipients')).toBeInTheDocument();
+      expect(screen.queryByText('Account 1 → Account 2')).not.toBeInTheDocument();
+    },
+  );
 });
 
 describe('ActivityList multi-pool transactions', () => {

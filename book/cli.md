@@ -726,10 +726,11 @@ dashboard's **Send ZEC** dialog (`POST /api/v1/zip321/parse`):
   when it sets one. `--max` quotes against the destination pool parsed from the
   URI.
 
-A multi-recipient URI (one with indexed parameters such as `address.1`) pays
-every recipient in **one transaction**, recorded as one payment with one
-idempotency key, txid, and status. The CLI submits the whole URI to
-`POST /api/v1/send`:
+A multi-recipient URI (one with more than one payment, such as `address` and
+`address.1`) pays every recipient in **one transaction**, recorded as one
+payment with one idempotency key, txid, and status. An indexed address alone,
+as in `zcash:?address.1=...`, is still a single payment. The CLI submits the
+whole URI to `POST /api/v1/send`:
 
 - Every payment must set a positive amount, so `--amount` and `--max` are
   rejected. Transparent outputs must be at least 54 zatoshi.
