@@ -519,19 +519,28 @@ pub(crate) async fn prepare_activity_intent(
                     .collect::<anyhow::Result<Vec<_>>>()?
             };
             attempt.check_can_start()?;
-            state
-                .0
-                .wallet
-                .prepare_payments(
+            let prepare = || {
+                state.0.wallet.prepare_payments(
                     Some(&activity.id),
                     replacement_txid,
                     &seed,
                     account_id,
                     &activity.source_pool,
-                    payments,
-                    record,
+                    payments.clone(),
+                    record.clone(),
                 )
-                .await
+            };
+            let prepared = prepare().await;
+            if let Err(error) = &prepared
+                && matches!(
+                    error.downcast_ref(),
+                    Some(PaymentError::AnchorPending { .. })
+                )
+                && !attempt.mine_and_sync(1).await?.is_empty()
+            {
+                return prepare().await;
+            }
+            prepared
         }
         "faucet" => {
             let account = state.0.store.account(TREASURY_ACCOUNT_ID)?;

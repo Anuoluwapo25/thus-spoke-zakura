@@ -60,6 +60,14 @@ instance's databases remain intact. This is not an end-to-end exactly-once
 guarantee: a fresh key requests a new payment, and deleting the instance deletes
 its recovery records.
 
+### Spending newly confirmed Ironwood
+
+A newly confirmed Ironwood output may need another block before it can be spent.
+Automatic Sends mine at most one prerequisite block and retry once. In manual
+or mempool mode, use `ths mine 1`; interval mode supplies the next block on its
+schedule. While waiting, the operation stays `preparing` with its original key.
+New ordinary NU7 payments expire 120 blocks after their candidate inclusion height.
+
 ## Multi-recipient sends
 
 A `POST /api/v1/send` body with `uri` replaces `to_account`, `to_address`,

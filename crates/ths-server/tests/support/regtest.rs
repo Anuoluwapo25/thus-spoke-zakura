@@ -470,7 +470,7 @@ impl RegtestStack {
                 "GID=0".into(),
                 "--publish".into(),
                 "127.0.0.1::18232".into(),
-                "zakuracore/zakura:1.6.0".into(),
+                "zakuracore/zakura:1.7.0".into(),
                 "zakurad".into(),
                 "start".into(),
             ],
