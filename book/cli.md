@@ -338,7 +338,7 @@ ths stop                 # repeat with --name for each instance you intend to de
 ths uninstall
 docker image rm ghcr.io/zcashlabs/thus-spoke-zakura-app:0.3.0 \
                 ghcr.io/zcashlabs/thus-spoke-zakura-lightwalletd:0.3.0 \
-                zakuracore/zakura:1.6.0
+                zakuracore/zakura:1.7.0
 ```
 
 Inspect `$THS_CONFIG_DIR` separately before deleting configuration. Retained

@@ -60,40 +60,13 @@ instance's databases remain intact. This is not an end-to-end exactly-once
 guarantee: a fresh key requests a new payment, and deleting the instance deletes
 its recovery records.
 
-## Multi-recipient sends
+### Spending newly confirmed Ironwood
 
-A `POST /api/v1/send` body with `uri` replaces `to_account`, `to_address`,
-`destination_pool`, `amount_zatoshi`, and `memo`, which must then be omitted:
-
-```json
-{"from_account": 1, "source_pool": "ironwood", "idempotency_key": "payroll-2026-10",
- "uri": "zcash:?address=uregtest1...&amount=0.1&address.1=tm...&amount.1=0.2"}
-```
-
-- The server validates **every** payment before recording anything: a Regtest
-  address, a positive amount the URI sets explicitly, at least 54 zatoshi for a
-  transparent output, a text memo only for Ironwood, and no return to the source
-  account in the source pool. One invalid payment rejects the whole request
-  with HTTP 400, so there is no partial payout. A URI with no payments, such
-  as `zcash:` or `zcash:?`, is rejected with HTTP 400 too.
-- A URI with one payment is recorded as an ordinary send, so it replays like
-  the same send made with explicit fields.
-- With two or more payments, the claim stores the complete output list with
-  the activity in one database transaction. Preparation reloads that list, so
-  a retry or a restart at any stage builds one transaction paying exactly the
-  claimed recipients.
-- The activity has one id, txid, and status. `amount_zatoshi` is the total, the
-  recipient fields are null, and `outputs` lists each payment.
-  `destination_pool` is null when the outputs use more than one pool.
-- A replay compares the parsed payments, not the URI text: reordering or
-  renumbering the URI's payments resumes the same payment, while any change to
-  a recipient, amount, pool, memo, source account, or source pool returns
-  **HTTP 409**.
-- A later send that is short of funds keeps waiting while an earlier unresolved
-  batch pays into its account and pool, as it does for a single-recipient
-  payment.
-
-The dashboard's **Payment request** field still accepts single-payment URIs only.
+A newly confirmed Ironwood output may need another block before it can be spent.
+Automatic Sends mine at most one prerequisite block and retry once. In manual
+or mempool mode, use `ths mine 1`; interval mode supplies the next block on its
+schedule. While waiting, the operation stays `preparing` with its original key.
+New ordinary NU7 payments expire 120 blocks after their candidate inclusion height.
 
 ## HTTP admission and status
 

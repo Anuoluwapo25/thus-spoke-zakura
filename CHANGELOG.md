@@ -4,6 +4,14 @@ For earlier releases, see [GitHub Releases](https://github.com/zcashlabs/thus-sp
 
 ## Unreleased
 
+- **Zakura Common 4:** Upgrade the wallet to Common 4.0.0, backend/SQLite
+  0.1.0-rc9.4, and Zakura 1.7.0; raise the minimum Rust version to 1.97.
+  Recreate the disposable instance after updating to initialize a fresh chain
+  and wallet. Ordinary NU7 payments use a 120-block expiry delta. Newly confirmed
+  Ironwood may need another block before spending; automatic Sends advance once
+  and retry, while other mining modes wait for chain progress.
+  [#436](https://github.com/zcashlabs/thus-spoke-zakura/issues/436)
+
 - **Docker failures name the failed command:** A Docker invocation that exited
   nonzero without printing anything produced an empty error message, so a
   launcher read that goes through Docker could report a blank reason with no

@@ -531,7 +531,18 @@ pub(crate) async fn prepare_activity_intent(
                     payments,
                     record,
                 )
-                .await
+            };
+            let prepared = prepare().await;
+            if let Err(error) = &prepared
+                && matches!(
+                    error.downcast_ref(),
+                    Some(PaymentError::AnchorPending { .. })
+                )
+                && !attempt.mine_and_sync(1).await?.is_empty()
+            {
+                return prepare().await;
+            }
+            prepared
         }
         "faucet" => {
             let account = state.0.store.account(TREASURY_ACCOUNT_ID)?;
