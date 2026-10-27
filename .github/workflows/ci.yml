@@ -111,7 +111,7 @@ jobs:
       - name: Run Docker-free recovery helper tests
         run: cargo test --locked --profile dev-runtime -p ths-server --test activity_recovery
       - name: Pull pinned Zakura node image
-        run: docker pull zakuracore/zakura:1.6.0
+        run: docker pull zakuracore/zakura:1.7.0
       - name: Build pinned lightwalletd image
         run: docker build -f docker/lightwalletd.Dockerfile -t ths-recovery-lightwalletd:local .
       - name: Run live activity recovery regressions

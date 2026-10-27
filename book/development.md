@@ -162,7 +162,7 @@ ignored cases, then run one at a time:
 ```console
 cargo test --locked --profile dev-runtime -p ths-server --test activity_recovery --no-run
 cargo test --locked --profile dev-runtime -p ths-server --test activity_recovery
-docker pull zakuracore/zakura:1.6.0
+docker pull zakuracore/zakura:1.7.0
 docker build -f docker/lightwalletd.Dockerfile -t ths-recovery-lightwalletd:local .
 cargo test --locked --profile dev-runtime -p ths-server --test activity_recovery -- --ignored --list
 cargo test --locked --profile dev-runtime -p ths-server --test activity_recovery -- --ignored --exact broadcast_recovers_after_auto_mine_failure

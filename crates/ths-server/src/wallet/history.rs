@@ -519,7 +519,8 @@ fn enhancement_txids(work: Vec<TransactionEnhancementWork>) -> BTreeSet<TxId> {
             TransactionEnhancementWork::Public(request) => Some(request.txid()),
             TransactionEnhancementWork::Private(EnhancePirWork::Query(request))
             | TransactionEnhancementWork::Private(EnhancePirWork::Suspended(
-                EnhancePirSuspension::OutgoingNotRecoverable(request),
+                EnhancePirSuspension::OutgoingNotRecoverable(request)
+                | EnhancePirSuspension::Rejected(request),
             )) => Some(request.request_id().txid()),
             TransactionEnhancementWork::Private(EnhancePirWork::Suspended(
                 EnhancePirSuspension::Discovery(failure),
