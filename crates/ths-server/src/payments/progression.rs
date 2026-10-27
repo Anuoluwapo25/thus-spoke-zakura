@@ -491,33 +491,7 @@ pub(crate) async fn prepare_activity_intent(
             let account_id = activity
                 .from_account
                 .context("send omitted source account")?;
-            // A batch reloads every saved output, so a retry or a restart pays
-            // exactly the recipients that were claimed, in one transaction.
-            let outputs = state.0.store.activity_outputs(&activity.id)?;
-            let payments = if outputs.is_empty() {
-                vec![send_payment(
-                    &state.0.store,
-                    activity.to_account,
-                    activity.to_address.as_deref(),
-                    &activity.destination_pool,
-                    activity.amount_zatoshi,
-                    intent.memo.as_deref(),
-                )?]
-            } else {
-                outputs
-                    .iter()
-                    .map(|output| {
-                        send_payment(
-                            &state.0.store,
-                            output.to_account,
-                            output.to_address.as_deref(),
-                            &output.destination_pool,
-                            output.amount_zatoshi,
-                            output.memo.as_deref(),
-                        )
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?
-            };
+            let payments = send_payments(&state.0.store, intent)?;
             attempt.check_can_start()?;
             let prepare = || {
                 state.0.wallet.prepare_payments(
@@ -569,6 +543,40 @@ pub(crate) async fn prepare_activity_intent(
         }
         kind => anyhow::bail!("unsupported accepted payment kind {kind}"),
     }
+}
+
+/// The recipients a send intent pays. A batch reloads every saved output, so a
+/// retry or a restart pays exactly the recipients that were claimed, in one
+/// transaction.
+pub(crate) fn send_payments(
+    store: &Store,
+    intent: &crate::db::ActivityIntent,
+) -> anyhow::Result<Vec<SendPayment>> {
+    let activity = &intent.activity;
+    let outputs = store.activity_outputs(&activity.id)?;
+    if outputs.is_empty() {
+        return Ok(vec![send_payment(
+            store,
+            activity.to_account,
+            activity.to_address.as_deref(),
+            &activity.destination_pool,
+            activity.amount_zatoshi,
+            intent.memo.as_deref(),
+        )?]);
+    }
+    outputs
+        .iter()
+        .map(|output| {
+            send_payment(
+                store,
+                output.to_account,
+                output.to_address.as_deref(),
+                &output.destination_pool,
+                output.amount_zatoshi,
+                output.memo.as_deref(),
+            )
+        })
+        .collect()
 }
 
 fn send_payment(

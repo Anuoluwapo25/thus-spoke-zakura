@@ -50,10 +50,11 @@ function accountLabel(accounts: number[] | undefined, account: number | null): s
 }
 
 function recipientLabel(activity: Activity): string {
-  // `recipient_addresses` lists only external addresses, so a batch to several
-  // addresses, or to accounts and addresses together, has no single recipient.
+  // A batch to several addresses, or to accounts and addresses together, has
+  // no single recipient. `recipient_addresses` can also name accounts' own
+  // addresses, so only external ones are counted beside the accounts.
   const accountCount = activity.to_accounts?.length || (activity.to_account === null ? 0 : 1);
-  const addresses = activity.recipient_addresses?.length ?? 0;
+  const addresses = activity.external_addresses?.length ?? 0;
   if (addresses > 0 && accountCount + addresses > 1) {
     return `${accountCount + addresses} recipients`;
   }

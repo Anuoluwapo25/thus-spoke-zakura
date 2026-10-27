@@ -49,6 +49,7 @@ fn canonical_activity(direction: &'static str, txid: &str) -> CanonicalActivity 
         from_accounts: vec![1],
         to_accounts: vec![2],
         recipient_addresses: Vec::new(),
+        external_addresses: Vec::new(),
         source_pools: vec!["ironwood".to_owned()],
         destination_pools: vec!["ironwood".to_owned()],
         amount_zatoshi: 100_000_000,
@@ -100,6 +101,7 @@ fn internal_transfer_is_returned_once_with_both_accounts() {
     let mut canonical = canonical_activity("outgoing", "internal-tx");
     canonical.to_account = None;
     canonical.to_accounts.clear();
+    canonical.recipient_addresses = vec!["uregtest1account2".to_owned()];
     let activity = unified_activity(
         vec![journal_send("internal-tx")],
         vec![canonical.clone(), canonical],
@@ -115,7 +117,8 @@ fn internal_transfer_is_returned_once_with_both_accounts() {
     assert_eq!(activity[0].from_accounts, [1]);
     assert_eq!(activity[0].to_accounts, [2]);
     assert_eq!(activity[0].to_address, None);
-    assert!(activity[0].recipient_addresses.is_empty());
+    assert_eq!(activity[0].recipient_addresses, ["uregtest1account2"]);
+    assert!(activity[0].external_addresses.is_empty());
 }
 
 #[test]
@@ -125,6 +128,10 @@ fn multi_account_transaction_preserves_every_affected_account() {
     canonical.to_account = None;
     canonical.from_accounts.clear();
     canonical.to_accounts = vec![2, 3];
+    canonical.recipient_addresses = vec![
+        "uregtest1account2".to_owned(),
+        "uregtest1account3".to_owned(),
+    ];
     canonical.amount_zatoshi = 300_000_000;
 
     let activity = unified_activity(Vec::new(), vec![canonical], 30);
@@ -163,6 +170,7 @@ fn external_incoming_and_unresolved_journal_entries_are_both_retained() {
     incoming.from_accounts.clear();
     incoming.to_account = Some(3);
     incoming.to_accounts = vec![3];
+    incoming.recipient_addresses = vec!["uregtest1account3".to_owned()];
     let mut pending = journal_send("");
     pending.status = "preparing".to_owned();
     pending.last_error = Some("wallet is syncing".to_owned());
@@ -174,7 +182,7 @@ fn external_incoming_and_unresolved_journal_entries_are_both_retained() {
         entry.to_account == Some(3)
             && entry.direction == "incoming"
             && entry.txid == "external-tx"
-            && entry.recipient_addresses.is_empty()
+            && entry.recipient_addresses == ["uregtest1account3"]
     }));
     assert!(activity.iter().any(|entry| {
         entry.id == "send-1"
@@ -265,6 +273,7 @@ fn canonical_activity_preserves_every_recipient_address() {
         "uregtest1external1".to_owned(),
         "uregtest1external2".to_owned(),
     ];
+    canonical.external_addresses = canonical.recipient_addresses.clone();
 
     let activity = unified_activity(Vec::new(), vec![canonical], 30);
 
@@ -1164,6 +1173,7 @@ fn pending_batch_lists_every_recipient_and_pool() {
     assert_eq!(entry.to_accounts, [2, 3]);
     assert_eq!(entry.to_address, None);
     assert_eq!(entry.recipient_addresses, ["uregtest1external"]);
+    assert_eq!(entry.external_addresses, ["uregtest1external"]);
     assert_eq!(entry.destination_pool, None);
     assert_eq!(entry.destination_pools, ["ironwood", "transparent"]);
     assert_eq!(entry.amount_zatoshi, 300_000_000);
@@ -1177,6 +1187,13 @@ fn mined_batch_keeps_every_recipient_and_pool() {
     canonical.to_account = None;
     canonical.to_accounts = vec![2, 3];
     canonical.destination_pools = vec!["ironwood".into(), "transparent".into()];
+    // The wallet lists every recipient address, development accounts included.
+    canonical.recipient_addresses = vec![
+        "tmaccount3".into(),
+        "uregtest1account2".into(),
+        "uregtest1external".into(),
+    ];
+    canonical.external_addresses = vec!["uregtest1external".into()];
 
     let activity = unified_activity(vec![journal_batch("batch-tx")], vec![canonical], 30);
 
@@ -1184,7 +1201,11 @@ fn mined_batch_keeps_every_recipient_and_pool() {
     let entry = &activity[0];
     assert_eq!(entry.id, "batch-1");
     assert_eq!(entry.to_accounts, [2, 3]);
-    assert_eq!(entry.recipient_addresses, ["uregtest1external"]);
+    assert_eq!(
+        entry.recipient_addresses,
+        ["tmaccount3", "uregtest1account2", "uregtest1external"]
+    );
+    assert_eq!(entry.external_addresses, ["uregtest1external"]);
     assert_eq!(entry.destination_pool, None);
     assert_eq!(entry.destination_pools, ["ironwood", "transparent"]);
     assert_eq!(entry.amount_zatoshi, 300_000_000);
@@ -1216,6 +1237,7 @@ fn canonical_external_batch(txid: &str, mined_height: Option<u32>) -> CanonicalA
     canonical.to_account = None;
     canonical.to_accounts = Vec::new();
     canonical.recipient_addresses = vec!["uregtest1first".into(), "uregtest1second".into()];
+    canonical.external_addresses = canonical.recipient_addresses.clone();
     canonical.mined_height = mined_height;
     canonical
 }
@@ -1227,6 +1249,10 @@ fn assert_no_single_external_recipient(entry: &ActivityEntry) {
     assert_eq!(entry.to_address, None);
     assert_eq!(
         entry.recipient_addresses,
+        ["uregtest1first", "uregtest1second"]
+    );
+    assert_eq!(
+        entry.external_addresses,
         ["uregtest1first", "uregtest1second"]
     );
     assert_eq!(entry.amount_zatoshi, 200_000_000);
@@ -1260,4 +1286,85 @@ fn confirmed_batch_to_several_addresses_has_no_single_to_address() {
     assert_eq!(activity.len(), 1);
     assert_no_single_external_recipient(&activity[0]);
     assert_eq!(activity[0].status, "confirmed");
+}
+
+/// Account 1 pays its own transparent pool and an external address in one
+/// transaction.
+fn journal_self_and_external_batch(txid: &str) -> Activity {
+    let output = |to_account, to_address: Option<&str>, destination_pool: &str| ActivityOutput {
+        to_account,
+        to_address: to_address.map(str::to_owned),
+        destination_pool: destination_pool.to_owned(),
+        amount_zatoshi: 100_000_000,
+        memo: None,
+    };
+    Activity {
+        id: "batch-self".to_owned(),
+        to_account: None,
+        to_address: None,
+        destination_pool: "mixed".to_owned(),
+        amount_zatoshi: 200_000_000,
+        status: "broadcast".to_owned(),
+        block_hash: None,
+        outputs: vec![
+            output(Some(1), None, "transparent"),
+            output(None, Some("uregtest1external"), "ironwood"),
+        ],
+        ..journal_send(txid)
+    }
+}
+
+fn assert_self_and_external_is_outgoing(entry: &ActivityEntry) {
+    assert_eq!(entry.id, "batch-self");
+    assert_eq!(entry.direction, "outgoing");
+    assert_eq!(entry.from_accounts, [1]);
+    assert_eq!(entry.to_accounts, [1]);
+    assert_eq!(entry.to_address, None);
+    assert_eq!(entry.external_addresses, ["uregtest1external"]);
+    assert_eq!(entry.amount_zatoshi, 200_000_000);
+}
+
+#[test]
+fn pending_batch_paying_the_sender_and_an_address_is_outgoing() {
+    let activity = unified_activity(vec![journal_self_and_external_batch("")], Vec::new(), 30);
+
+    assert_eq!(activity.len(), 1);
+    assert_self_and_external_is_outgoing(&activity[0]);
+    assert_eq!(activity[0].status, "broadcast");
+}
+
+#[test]
+fn confirmed_batch_paying_the_sender_and_an_address_is_outgoing() {
+    let mut canonical = canonical_activity("outgoing", "batch-self-tx");
+    canonical.to_account = Some(1);
+    canonical.to_accounts = vec![1];
+    canonical.recipient_addresses = vec!["tmaccount1".into(), "uregtest1external".into()];
+    canonical.external_addresses = vec!["uregtest1external".into()];
+    canonical.destination_pools = vec!["ironwood".into(), "transparent".into()];
+
+    let activity = unified_activity(
+        vec![journal_self_and_external_batch("batch-self-tx")],
+        vec![canonical],
+        30,
+    );
+
+    assert_eq!(activity.len(), 1);
+    assert_self_and_external_is_outgoing(&activity[0]);
+    assert_eq!(activity[0].status, "confirmed");
+    assert_eq!(
+        activity[0].recipient_addresses,
+        ["tmaccount1", "uregtest1external"]
+    );
+}
+
+#[test]
+fn a_send_between_the_senders_own_pools_is_still_self() {
+    let mut send = journal_send("");
+    send.to_account = Some(1);
+    send.status = "broadcast".to_owned();
+    send.block_hash = None;
+
+    let activity = unified_activity(vec![send], Vec::new(), 30);
+
+    assert_eq!(activity[0].direction, "self");
 }

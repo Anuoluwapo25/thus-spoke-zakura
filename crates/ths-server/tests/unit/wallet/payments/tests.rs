@@ -1342,3 +1342,107 @@ fn reserved_tip_receipt_cannot_request_another_anchor_block() {
             .is_none()
     );
 }
+
+/// The recovery case: the server stops after claiming a batch but before
+/// preparing it. After a restart, preparation rebuilds the payments from the
+/// saved outputs alone and builds one transaction paying every recipient.
+#[tokio::test]
+async fn a_batch_interrupted_while_preparing_pays_every_saved_output_in_one_transaction() {
+    use crate::db::{ActivityOutput, Store};
+    use crate::payments::{execution::record_prepared_payment, progression::send_payments};
+    use secrecy::ExposeSecret;
+
+    let mut st = test_state();
+    fund_ironwood(&mut st, 10_000_000);
+    let first = st.test_account().unwrap().id();
+    let seed = hex::encode(st.test_seed().unwrap().expose_secret());
+    let external = recipient(&st, "transparent").encode(st.network());
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = file_wallet(&st, dir.path(), "wallet.db", vec![first]);
+    // The server's own wallets carry the prepared-transaction journal; the
+    // harness wallet needs it added before it can record a preparation.
+    WalletMigrator::new()
+        .with_seed(SecretVec::new(
+            st.test_seed().unwrap().expose_secret().clone(),
+        ))
+        .with_external_migrations(vec![Box::new(super::super::PreparedPaymentsMigration)])
+        .init_or_migrate(&mut *wallet.db.lock().await)
+        .unwrap();
+
+    let path = dir.path().join("server.db");
+    let store = Store::open(&path).unwrap();
+    store.initialize().unwrap();
+    let account_2 = store.account(2).unwrap().unified_address;
+    let outputs = vec![
+        ActivityOutput {
+            to_account: Some(2),
+            to_address: None,
+            destination_pool: "ironwood".to_owned(),
+            amount_zatoshi: 1_000_000,
+            memo: Some("payroll".to_owned()),
+        },
+        ActivityOutput {
+            to_account: None,
+            to_address: Some(external.clone()),
+            destination_pool: "transparent".to_owned(),
+            amount_zatoshi: 2_000_000,
+            memo: None,
+        },
+    ];
+    let claim = store
+        .claim_batch_transfer(1, "ironwood", &outputs, "interrupted-batch")
+        .unwrap();
+    assert_eq!(claim.status, "preparing");
+    drop(store);
+
+    let store = Store::open(&path).unwrap();
+    store.initialize().unwrap();
+    let pending = store.pending_activities().unwrap();
+    let [(_, crate::db::ActivityRecovery::Intent(intent))] = pending.as_slice() else {
+        panic!("the claimed batch must be the one pending intent");
+    };
+    assert_eq!(intent.activity.id, claim.id);
+    assert_eq!(intent.activity.status, "preparing");
+    assert_eq!(intent.activity.txid, "");
+
+    let prepare = || {
+        wallet.prepare_payments(
+            Some(&claim.id),
+            None,
+            &seed,
+            1,
+            "ironwood",
+            send_payments(&store, intent).unwrap(),
+            record_prepared_payment(&store, &claim.id),
+        )
+    };
+    let prepared = prepare().await.unwrap();
+    let recorded = store.activity(&claim.id).unwrap();
+    assert_eq!(recorded.status, "prepared");
+    assert_eq!(recorded.txid, prepared.txid);
+
+    let tx = Transaction::read(&prepared.raw_transaction[..], BranchId::Nu7).unwrap();
+    let transparent: Vec<_> = tx
+        .transparent_bundle()
+        .unwrap()
+        .vout
+        .iter()
+        .map(|output| u64::from(output.value()))
+        .collect();
+    assert_eq!(transparent, [2_000_000]);
+    let view = wallet.wallet_transaction(tx.txid()).await.unwrap();
+    let mut paid: Vec<_> = view
+        .outputs
+        .iter()
+        .filter(|output| !output.change)
+        .map(|output| (output.value_zatoshi, output.to_address.clone()))
+        .collect();
+    paid.sort();
+    assert_eq!(
+        paid,
+        [(1_000_000, Some(account_2)), (2_000_000, Some(external))]
+    );
+
+    // A second restart after preparation reuses the saved transaction.
+    assert_eq!(prepare().await.unwrap().txid, prepared.txid);
+}

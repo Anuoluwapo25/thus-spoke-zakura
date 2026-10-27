@@ -167,6 +167,7 @@ describe('ActivityList multi-recipient batches', () => {
                 to_accounts: [],
                 to_address: null,
                 recipient_addresses: ['uregtest1first', 'uregtest1second'],
+                external_addresses: ['uregtest1first', 'uregtest1second'],
                 source_pool: 'ironwood',
                 destination_pool: 'ironwood',
                 amount_zatoshi: 200_000_000n,
@@ -213,7 +214,8 @@ describe('ActivityList multi-recipient batches', () => {
                   from_accounts: [1],
                   to_accounts: [2],
                   to_address: null,
-                  recipient_addresses: ['uregtest1external'],
+                  recipient_addresses: ['uregtest1account2', 'uregtest1external'],
+                  external_addresses: ['uregtest1external'],
                   source_pool: 'ironwood',
                   destination_pool: 'ironwood',
                   amount_zatoshi: 300_000_000n,
@@ -234,6 +236,46 @@ describe('ActivityList multi-recipient batches', () => {
       expect(screen.queryByText('Account 1 → Account 2')).not.toBeInTheDocument();
     },
   );
+
+  it('labels a confirmed single send by its account even though its address is listed', () => {
+    renderWithProviders(
+      <MemoryRouter>
+        <ActivityList
+          activity={{
+            isPending: false,
+            isError: false,
+            error: null,
+            data: [
+              {
+                id: 'single-to-account',
+                kind: 'send',
+                direction: 'internal',
+                from_account: 1,
+                to_account: 2,
+                from_accounts: [1],
+                to_accounts: [2],
+                to_address: null,
+                recipient_addresses: ['uregtest1account2'],
+                external_addresses: [],
+                source_pool: 'ironwood',
+                destination_pool: 'ironwood',
+                amount_zatoshi: 100_000_000n,
+                txid: 'be'.repeat(32),
+                block_hash: 'cf'.repeat(32),
+                mined_height: 123,
+                status: 'confirmed',
+                last_error: null,
+                created_at: '2026-10-02 12:00:00',
+              },
+            ],
+          }}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('Account 1 → Account 2')).toBeInTheDocument();
+    expect(screen.queryByText(/recipients/)).not.toBeInTheDocument();
+  });
 });
 
 describe('ActivityList multi-pool transactions', () => {
